@@ -1,9 +1,9 @@
 import { join } from '@std/path';
 import { assertEquals } from 'jsr:@std/assert';
 import { CONFIG, loadConfig } from './config.ts';
-import { main, ParsedArgs } from './main.ts';
+import { main, type ParsedArgs } from './main.ts';
 
-const repo = 'git@github.com:axhxrx/blanch.git';
+const repo = 'https://github.com/axhxrx/blanch.git';
 const branch = 'main';
 
 const tempDir = Deno.makeTempDirSync();
