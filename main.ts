@@ -284,6 +284,11 @@ export async function main(parsedArgs?: ParsedArgs): Promise<number>
     const tempLogFile = Deno.makeTempFileSync({ suffix: '.log.json' });
     Deno.writeTextFileSync(tempLogFile, `${JSON.stringify(result, null, 2)}`);
     console.log(`📃 For details, see log file: ${tempLogFile}`);
+
+    if (Deno.env.get('CI'))
+    {
+      console.error(`❌ Failed. Log: ${JSON.stringify(result, null, 2)}`);
+    }
   }
   else
   {
