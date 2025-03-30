@@ -5,9 +5,24 @@ import { loadConfig, saveConfig } from './config.ts';
 import { fetchRemoteBranches } from './git-stuff.ts';
 import { printHelp } from './printHelp.ts';
 
-export async function main()
+export interface ParsedArgs
 {
-  const args = parseArgs(Deno.args, {
+  _?: string[] | number[];
+  r?: string;
+  repo?: string;
+  l?: boolean;
+  list?: boolean;
+  h?: boolean;
+  help?: boolean;
+  b?: string;
+  branch?: string;
+}
+
+export async function main(parsedArgs?: ParsedArgs): Promise<number>
+{
+  const cwd = Deno.cwd();
+
+  const args = parsedArgs ?? parseArgs(Deno.args, {
     string: ['r', 'repo', 'b', 'branch'],
     boolean: ['l', 'list', 'h', 'help'],
     alias: { r: 'repo', l: 'list', h: 'help', b: 'branch' },
@@ -16,7 +31,7 @@ export async function main()
   if (args.help)
   {
     printHelp();
-    return;
+    return 0;
   }
 
   const config = await loadConfig();
@@ -38,7 +53,7 @@ export async function main()
         console.log(`${prefix}${i + 1}. ${repo}`);
       });
     }
-    return;
+    return 0;
   }
 
   // Get repo URL - always show list even if repo is specified on command line
@@ -75,7 +90,7 @@ export async function main()
       else
       {
         console.error('Invalid selection');
-        return;
+        return 1;
       }
     }
     else if (repoUrl)
@@ -98,7 +113,7 @@ export async function main()
   if (!repoUrl)
   {
     console.error('Repository URL is required');
-    return;
+    return 1;
   }
 
   // Update config
@@ -110,7 +125,7 @@ export async function main()
   await saveConfig(config);
 
   // Get branch name
-  let branchName = args.branch || args._[0]; // Support both --branch option and positional arg
+  let branchName = args.branch || args._?.[0]; // Support both --branch option and positional arg
   let createNewBranch = false;
 
   if (!branchName)
@@ -158,13 +173,13 @@ export async function main()
           else
           {
             console.error('Invalid branch selection');
-            return;
+            return 1;
           }
         }
         else
         {
           console.error('No branch selected');
-          return;
+          return 1;
         }
       }
     }
@@ -183,14 +198,14 @@ export async function main()
     else
     {
       console.error('Invalid selection');
-      return;
+      return 1;
     }
   }
 
   if (!branchName)
   {
     console.error('Branch name is required');
-    return;
+    return 1;
   }
 
   // Execute the clone command
@@ -206,9 +221,6 @@ export async function main()
   // Create a directory name from the repo URL
   const repoName = repoUrl.split('/').pop()?.replace('.git', '') || 'repo';
   const dirName = `${repoName}-${branchName}`;
-
-  // Build command sequence based on whether we're creating a new branch
-  let commands: (string | Cmd)[];
 
   // Base commands for all scenarios
   const baseCommands = [
@@ -228,46 +240,60 @@ export async function main()
 
   // Add package manager commands that run only if specific files exist
   baseCommands.push(`
-if [ -f package-lock.json ]; then
-  echo "📦 Node.js project (npm) detected, installing dependencies..."
-  time npm ci
-elif [ -f yarn.lock ]; then
-  echo "📦 Node.js project (yarn) detected, installing dependencies..."
-  time yarn install --frozen-lockfile
-elif [ -f pnpm-lock.yaml ]; then
-  echo "📦 Node.js project (pnpm) detected, installing dependencies..."
-  time pnpm install --frozen-lockfile
-elif [ -f bun.lockb ]; then
-  echo "📦 Bun project (bun) detected, installing dependencies..."
-  time bun install
-elif [ -f bun.lock ]; then
-  echo "📦 Bun project (bun) detected, installing dependencies..."
-  time bun install
-elif [ -f Cargo.toml ]; then
-  echo "📦 Rust project detected, building dependencies..."
-  time cargo build
-elif [ -f Gemfile ]; then
-  echo "📦 Ruby project detected, installing dependencies..."
-  time bundle install
-elif [ -f requirements.txt ]; then
-  echo "📦 Python project detected, installing dependencies..."
-  time pip install -r requirements.txt
-elif [ -f go.mod ]; then
-  echo "📦 Go project detected, downloading dependencies..."
-  time go mod download
-else
-  echo "📦 No package manager config detected, skipping dependency installation"
-fi
-`);
+    bash -c '
+    if [ -f package-lock.json ]; then
+      echo "📦 Node.js project (npm) detected, installing dependencies..."
+      time npm ci
+    elif [ -f yarn.lock ]; then
+      echo "📦 Node.js project (yarn) detected, installing dependencies..."
+      time yarn install --frozen-lockfile
+    elif [ -f pnpm-lock.yaml ]; then
+      echo "📦 Node.js project (pnpm) detected, installing dependencies..."
+      time pnpm install --frozen-lockfile
+    elif [ -f bun.lockb ]; then
+      echo "📦 Bun project (bun) detected, installing dependencies..."
+      time bun install
+    elif [ -f bun.lock ]; then
+      echo "📦 Bun project (bun) detected, installing dependencies..."
+      time bun install
+    elif [ -f Cargo.toml ]; then
+      echo "📦 Rust project detected, building dependencies..."
+      time cargo build
+    elif [ -f Gemfile ]; then
+      echo "📦 Ruby project detected, installing dependencies..."
+      time bundle install
+    elif [ -f requirements.txt ]; then
+      echo "📦 Python project detected, installing dependencies..."
+      time pip install -r requirements.txt
+    elif [ -f go.mod ]; then
+      echo "📦 Go project detected, downloading dependencies..."
+      time go mod download
+    else
+      echo "📦 No package manager config detected, skipping dependency installation"
+    fi
+    '
+  `);
 
-  commands = baseCommands;
-
-  const cmd = new CmdSeq({ commands });
+  const cmd = new CmdSeq({ commands: baseCommands });
 
   const result = await cmd.run();
 
-  console.log(`Command completed with status code ${result.exitCode}`);
-  console.log(result);
+  if (result.exitCode !== 0)
+  {
+    console.warn(`😞 Failed. Exit code: ${result.exitCode}`);
+    const tempLogFile = Deno.makeTempFileSync({ suffix: '.log.json' });
+    Deno.writeTextFileSync(tempLogFile, `${JSON.stringify(result, null, 2)}`);
+    console.log(`📃 For details, see log file: ${tempLogFile}`);
+  }
+  else
+  {
+    console.log(`✅ All done.`);
+  }
+
+  // Go back to original CWD just to work around a Deno LSP editor extension bug
+  Deno.chdir(cwd);
+
+  return result.exitCode;
 }
 
 if (import.meta.main)

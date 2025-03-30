@@ -1,7 +1,14 @@
 import { exists } from '@std/fs';
 import { join } from '@std/path';
 
-export const CONFIG_PATH = join(Deno.env.get('HOME') || '~', '.blanch.json');
+const CONFIG_PATH = join(Deno.env.get('HOME') || '~', '.blanch.json');
+
+export const CONFIG = {
+  /**
+   Tests can override the config path using this. Set to `'' to disable override and use the default.
+   */
+  overrideConfigPath: '',
+};
 
 /**
  Configuration interface
@@ -17,11 +24,12 @@ interface Config
  */
 export async function loadConfig(): Promise<Config>
 {
+  const configPath = CONFIG.overrideConfigPath || CONFIG_PATH;
   try
   {
-    if (await exists(CONFIG_PATH))
+    if (await exists(configPath))
     {
-      const text = await Deno.readTextFile(CONFIG_PATH);
+      const text = await Deno.readTextFile(configPath);
       return JSON.parse(text);
     }
   }
@@ -39,9 +47,10 @@ export async function loadConfig(): Promise<Config>
  */
 export async function saveConfig(config: Config): Promise<void>
 {
+  const configPath = CONFIG.overrideConfigPath || CONFIG_PATH;
   try
   {
-    await Deno.writeTextFile(CONFIG_PATH, JSON.stringify(config, null, 2));
+    await Deno.writeTextFile(configPath, JSON.stringify(config, null, 2));
   }
   catch (error)
   {
