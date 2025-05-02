@@ -1,6 +1,6 @@
-import { Cmd, CmdSeq } from '@axhxrx/cmd';
+import { Cmd } from '@axhxrx/cmd';
 import { parseArgs } from '@std/cli';
-
+import { prompt, Input, Select } from '@cliffy/prompt';
 import { loadConfig, saveConfig } from './config.ts';
 import { fetchRemoteBranches } from './git-stuff.ts';
 import { printHelp } from './printHelp.ts';
@@ -57,62 +57,159 @@ export async function main(parsedArgs?: ParsedArgs): Promise<number>
   }
 
   // Get repo URL - always show list even if repo is specified on command line
-  let repoUrl = args.repo;
+  let repoUrl = args.repo
+    ? args.repo
+    : config.repos.length > 0
+    ? config.lastRepo
+    : undefined;
 
-  // Present repository selection if there are any saved repos
-  if (config.repos.length > 0)
+  // === Repository Selection ===
+  const ENTER_NEW_URL = Symbol('ENTER_NEW_URL'); // Sentinel value
+
+  if (!repoUrl || (args.list && config.repos.length > 0))
   {
-    console.log('Select repository (or enter a new one):');
+    console.log('Selecting Repository...');
+    const repoOptions = [
+      ...config.repos.map((r) => ({ name: r, value: r })),
+      Select.separator('---'),
+      { name: '[Enter New URL]', value: ENTER_NEW_URL },
+    ];
 
-    config.repos.forEach((repo, i) =>
-    {
-      const prefix = repo === config.lastRepo ? '* ' : '  ';
-      console.log(`${prefix}${i + 1}. ${repo}`);
-    });
-
-    console.log('  n. Enter a new repository URL');
-
-    const defaultOption = repoUrl || config.lastRepo || '';
-    const defaultText = defaultOption ? ` (default: ${defaultOption})` : '';
-    const response = prompt(`Selection${defaultText}: `) || '';
-
-    if (response.toLowerCase() === 'n')
-    {
-      repoUrl = prompt('Enter repository URL: ') || repoUrl || '';
-    }
-    else if (response.trim() !== '')
-    {
-      const index = parseInt(response) - 1;
-      if (!isNaN(index) && index >= 0 && index < config.repos.length)
+    const selectedRepo = await prompt([
       {
-        repoUrl = config.repos[index];
-      }
-      else
-      {
-        console.error('Invalid selection');
-        return 1;
-      }
+        name: 'repo',
+        message: 'Select a repository or enter a new one',
+        type: Select,
+        options: repoOptions,
+        default: repoUrl || (config.repos.length > 0 ? config.repos[0] : undefined),
+        search: true,
+      },
+    ]);
+
+    // Correctly compare with the symbol sentinel (ensure it's not undefined first)
+    if (selectedRepo.repo && typeof selectedRepo.repo === 'symbol' && selectedRepo.repo === ENTER_NEW_URL) {
+      const { newRepoUrl } = await prompt([
+        {
+          name: 'newRepoUrl',
+          message: 'Enter repository URL:',
+          type: Input,
+          default: '',
+        },
+      ]);
+      repoUrl = newRepoUrl || '';
     }
-    else if (repoUrl)
+    else if (selectedRepo.repo)
     {
-      // Keep the repoUrl from command line
-    }
-    else if (config.lastRepo)
-    {
-      // Default to last used
-      repoUrl = config.lastRepo;
+      repoUrl = selectedRepo.repo;
     }
   }
-  else if (!repoUrl)
+
+  // List repos if requested and exit
+  if (args.list)
   {
-    // If no saved repos and no repo specified on command line, prompt for URL
-    repoUrl = prompt('Enter repository URL: ') || '';
+    if (config.repos.length > 0)
+    {
+      console.log('Saved repositories:');
+      config.repos.forEach((r) => console.log(` - ${r}`));
+    }
+    else
+    {
+      console.log('No repositories saved yet.');
+    }
+    return 0;
   }
 
   // Final check for repo URL
   if (!repoUrl)
   {
     console.error('Repository URL is required');
+    return 1;
+  }
+
+  // === Branch Selection ===
+  const CREATE_NEW_BRANCH = Symbol('CREATE_NEW_BRANCH'); // Sentinel value
+  let branchName: string | undefined = args.branch || (typeof args._?.[0] === 'string' ? args._?.[0] : undefined);
+  let createNewBranch = false;
+
+  // Only prompt if branch wasn't specified via args
+  if (!branchName) {
+    const specificAction = typeof args._?.[0] === 'string' ? args._?.[0] : undefined; // Store if user used '.' or '..'
+    // branchName = undefined; // Reset branchName for selection - Already done above
+
+    console.log('Fetching remote branches...');
+    // Pass repoUrl to fetchRemoteBranches
+    const branches = await fetchRemoteBranches(repoUrl);
+
+    if (specificAction === '..') { // User wants to select an existing branch
+      if (branches.length === 0)
+      {
+        console.error('No existing remote branches found to select from.');
+        return 1;
+      }
+      const branchOptions = branches.map((b) => ({ name: b, value: b }));
+      const selectedBranch = await prompt([
+        {
+          name: 'branch',
+          message: 'Select an existing branch',
+          type: Select,
+          options: branchOptions,
+          search: true,
+        },
+      ]);
+      branchName = selectedBranch.branch; // Assign to the outer scope variable
+    }
+    else if (specificAction === '.') { // User wants to create a new branch
+      const { newBranch } = await prompt([
+        {
+          name: 'newBranch',
+          message: 'Enter new branch name:',
+          type: Input,
+          default: '',
+        },
+      ]);
+      branchName = newBranch || ''; // Assign to the outer scope variable
+      createNewBranch = true;
+    }
+    else { // Default: let user select existing or create new
+      const branchOptions = [
+        ...branches.map((b) => ({ name: b, value: b })),
+        Select.separator('---'),
+        { name: '[Create New Branch]', value: CREATE_NEW_BRANCH },
+      ];
+
+      const selectedBranch = await prompt([
+        {
+          name: 'branch',
+          message: 'Select an existing branch or create a new one',
+          type: Select,
+          options: branchOptions,
+          search: true,
+          default: branches.length > 0 ? branches[0] : undefined,
+        },
+      ]);
+
+      // Correctly compare with the symbol sentinel (ensure it's not undefined first)
+      if (selectedBranch.branch && typeof selectedBranch.branch === 'symbol' && selectedBranch.branch === CREATE_NEW_BRANCH) {
+        const { newBranch } = await prompt([
+          {
+            name: 'newBranch',
+            message: 'Enter new branch name:',
+            type: Input,
+            default: '',
+          },
+        ]);
+        branchName = newBranch || ''; // Assign to the outer scope variable
+        createNewBranch = true;
+      }
+      else if (selectedBranch.branch) {
+        branchName = selectedBranch.branch; // Assign to the outer scope variable
+      }
+    }
+  }
+
+  // Final check for branch name
+  if (!branchName) {
+    console.error('Branch name is required');
     return 1;
   }
 
@@ -124,181 +221,23 @@ export async function main(parsedArgs?: ParsedArgs): Promise<number>
   config.lastRepo = repoUrl;
   await saveConfig(config);
 
-  // Get branch name
-  let branchName = args.branch || args._?.[0]; // Support both --branch option and positional arg
-  let createNewBranch = false;
-
-  if (!branchName)
-  {
-    console.log('Select branch:');
-    console.log('  1. Fetch branches from remote');
-    console.log('  2. Enter existing branch name');
-    console.log('  3. Create new branch');
-
-    const branchResponse = prompt('Selection (default: 1): ') || '1';
-
-    if (branchResponse === '1')
-    {
-      console.log(`Fetching branches from ${repoUrl}...`);
-      const branches = await fetchRemoteBranches(repoUrl);
-
-      if (branches.length === 0)
-      {
-        console.log('No branches found or error fetching branches.');
-        branchName = prompt('Enter branch name: ') || '';
-      }
-      else
-      {
-        console.log('Available branches:');
-        branches.forEach((branch, i) =>
-        {
-          console.log(`  ${i + 1}. ${branch}`);
-        });
-
-        const branchSelection = prompt('Select branch number: ') || '';
-        const branchIndex = parseInt(branchSelection) - 1;
-
-        if (!isNaN(branchIndex) && branchIndex >= 0 && branchIndex < branches.length)
-        {
-          branchName = branches[branchIndex];
-        }
-        else if (branchSelection.trim() !== '')
-        {
-          // Check if user entered branch name directly
-          const matchedBranch = branches.find(b => b === branchSelection.trim());
-          if (matchedBranch)
-          {
-            branchName = matchedBranch;
-          }
-          else
-          {
-            console.error('Invalid branch selection');
-            return 1;
-          }
-        }
-        else
-        {
-          console.error('No branch selected');
-          return 1;
-        }
-      }
-    }
-    else if (branchResponse === '2')
-    {
-      branchName = prompt('Enter existing branch name: ') || '';
-    }
-    else if (branchResponse === '3')
-    {
-      branchName = prompt('Enter new branch name: ') || '';
-      if (branchName)
-      {
-        createNewBranch = true;
-      }
-    }
-    else
-    {
-      console.error('Invalid selection');
-      return 1;
-    }
-  }
-
-  if (!branchName)
-  {
-    console.error('Branch name is required');
-    return 1;
-  }
-
   // Execute the clone command
-  if (createNewBranch)
-  {
-    console.log(`Cloning ${repoUrl}, creating new branch: ${branchName}`);
-  }
-  else
-  {
-    console.log(`Cloning ${repoUrl}, branch: ${branchName}`);
-  }
-
-  // Create a directory name from the repo URL
-  const repoName = repoUrl.split('/').pop()?.replace('.git', '') || 'repo';
-  const dirName = `${repoName}-${branchName}`;
-
-  // Base commands for all scenarios
-  const baseCommands = [
-    `git clone ${repoUrl} ${dirName}`,
-    Cmd.cd(`${dirName}`),
-  ];
-
-  // Add branch checkout command based on whether creating new branch
-  if (createNewBranch)
-  {
-    baseCommands.push(`git checkout -b ${branchName}`);
-  }
-  else
-  {
-    baseCommands.push(`git checkout ${branchName}`);
+  if (createNewBranch) {
+    console.log(`Cloning ${repoUrl} and creating new branch ${branchName}...`);
+    await new Cmd('git', ['clone', '--origin', 'origin', '--branch', 'main', repoUrl, cwd]).run(); // Clone main first
+    await new Cmd('git', ['-C', cwd, 'checkout', '-b', branchName]).run(); // Create new branch
+    await new Cmd('git', ['-C', cwd, 'push', '-u', 'origin', branchName]).run(); // Push new branch
+  } else {
+    console.log(`Cloning branch ${branchName} from ${repoUrl}...`);
+    await new Cmd('git', ['clone', '--origin', 'origin', '--branch', branchName, repoUrl, cwd]).run();
   }
 
-  // Add package manager commands that run only if specific files exist
-  baseCommands.push(`
-    bash -c '
-    if [ -f package-lock.json ]; then
-      echo "📦 Node.js project (npm) detected, installing dependencies..."
-      time npm ci
-    elif [ -f yarn.lock ]; then
-      echo "📦 Node.js project (yarn) detected, installing dependencies..."
-      time yarn install --frozen-lockfile
-    elif [ -f pnpm-lock.yaml ]; then
-      echo "📦 Node.js project (pnpm) detected, installing dependencies..."
-      time pnpm install --frozen-lockfile
-    elif [ -f bun.lockb ]; then
-      echo "📦 Bun project (bun) detected, installing dependencies..."
-      time bun install
-    elif [ -f bun.lock ]; then
-      echo "📦 Bun project (bun) detected, installing dependencies..."
-      time bun install
-    elif [ -f Cargo.toml ]; then
-      echo "📦 Rust project detected, building dependencies..."
-      time cargo build
-    elif [ -f Gemfile ]; then
-      echo "📦 Ruby project detected, installing dependencies..."
-      time bundle install
-    elif [ -f requirements.txt ]; then
-      echo "📦 Python project detected, installing dependencies..."
-      time pip install -r requirements.txt
-    elif [ -f go.mod ]; then
-      echo "📦 Go project detected, downloading dependencies..."
-      time go mod download
-    else
-      echo "📦 No package manager config detected, skipping dependency installation"
-    fi
-    '
-  `);
-
-  const cmd = new CmdSeq({ commands: baseCommands });
-
-  const result = await cmd.run();
-
-  if (result.exitCode !== 0)
-  {
-    console.warn(`😞 Failed. Exit code: ${result.exitCode}`);
-    const tempLogFile = Deno.makeTempFileSync({ suffix: '.log.json' });
-    Deno.writeTextFileSync(tempLogFile, `${JSON.stringify(result, null, 2)}`);
-    console.log(`📃 For details, see log file: ${tempLogFile}`);
-
-    if (Deno.env.get('CI'))
-    {
-      console.error(`❌ Failed. Log: ${JSON.stringify(result, null, 2)}`);
-    }
-  }
-  else
-  {
-    console.log(`✅ All done.`);
-  }
+  console.log(`Successfully cloned to ${cwd}`);
 
   // Go back to original CWD just to work around a Deno LSP editor extension bug
   Deno.chdir(cwd);
 
-  return result.exitCode;
+  return 0;
 }
 
 if (import.meta.main)

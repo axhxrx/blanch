@@ -5,6 +5,7 @@
   "license": "MIT",
   "imports": {
     "@axhxrx/cmd": "jsr:@axhxrx/cmd@^0.1.5",
+    "@cliffy/prompt": "jsr:@cliffy/prompt@^1.0.0-rc.7",
     "@std/assert": "jsr:@std/assert@^1.0.12",
     "@std/cli": "jsr:@std/cli@^1.0.15",
     "@std/fs": "jsr:@std/fs@^1.0.15",
