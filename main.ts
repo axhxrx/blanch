@@ -28,66 +28,64 @@ export async function main(parsedArgs?: ParsedArgs): Promise<number>
     alias: { r: 'repo', l: 'list', h: 'help', b: 'branch' },
   });
 
-  if (args.help)
-  {
+  if (args.help) {
     printHelp();
     return 0;
   }
 
   const config = await loadConfig();
 
-  // List repositories
-  if (args.list)
-  {
-    console.log('Saved repositories:');
-
-    if (config.repos.length === 0)
-    {
-      console.log('  No repositories saved yet');
-    }
-    else
-    {
-      config.repos.forEach((repo, i) =>
-      {
-        const prefix = repo === config.lastRepo ? '* ' : '  ';
-        console.log(`${prefix}${i + 1}. ${repo}`);
-      });
+  // Handle --list flag first and exit
+  if (args.list) {
+    if (config.repos.length > 0) {
+      console.log('Saved repositories:');
+      config.repos.forEach((r) => console.log(` - ${r}`));
+    } else {
+      console.log('No repositories saved yet.');
     }
     return 0;
   }
 
-  // Get repo URL - always show list even if repo is specified on command line
+  // Initialize repoUrl: command-line arg takes precedence, then last used repo
   let repoUrl = args.repo
     ? args.repo
     : config.repos.length > 0
     ? config.lastRepo
     : undefined;
 
-  // === Repository Selection ===
+  // === Repository Selection (only if not provided via args) ===
   const ENTER_NEW_URL = Symbol('ENTER_NEW_URL'); // Sentinel value
 
-  if (!repoUrl || (args.list && config.repos.length > 0))
-  {
+  if (!args.repo) { // Prompt only if repo wasn't specified on the command line
     console.log('Selecting Repository...');
     const repoOptions = [
-      ...config.repos.map((r) => ({ name: r, value: r })),
+      // Ensure unique values for options if names are the same
+      ...config.repos.map((r, index) => ({ name: r, value: `${r}_${index}` })), // Add index to value for uniqueness
       Select.separator('---'),
       { name: '[Enter New URL]', value: ENTER_NEW_URL },
     ];
 
-    const selectedRepo = await prompt([
+    // Use the initialized repoUrl (which might be lastRepo) as the default
+    // Find the unique value corresponding to the default repoUrl
+    const defaultRepoValue = config.repos.findIndex(r => r === repoUrl) !== -1
+      ? `${repoUrl}_${config.repos.findIndex(r => r === repoUrl)}`
+      : undefined;
+
+    const selectedRepoResult = await prompt([
       {
-        name: 'repo',
+        name: 'selectedValue',
         message: 'Select a repository or enter a new one',
         type: Select,
         options: repoOptions,
-        default: repoUrl || (config.repos.length > 0 ? config.repos[0] : undefined),
+        default: defaultRepoValue,
         search: true,
       },
     ]);
 
+    const selectedValue = selectedRepoResult.selectedValue;
+
     // Correctly compare with the symbol sentinel (ensure it's not undefined first)
-    if (selectedRepo.repo && typeof selectedRepo.repo === 'symbol' && selectedRepo.repo === ENTER_NEW_URL) {
+    if (selectedValue && typeof selectedValue === 'symbol' && selectedValue === ENTER_NEW_URL) {
       const { newRepoUrl } = await prompt([
         {
           name: 'newRepoUrl',
@@ -96,32 +94,16 @@ export async function main(parsedArgs?: ParsedArgs): Promise<number>
           default: '',
         },
       ]);
-      repoUrl = newRepoUrl || '';
+      repoUrl = newRepoUrl || ''; // Update repoUrl
+    } else if (selectedValue && typeof selectedValue === 'string') {
+      // Extract the original repo URL from the unique value
+      repoUrl = selectedValue.substring(0, selectedValue.lastIndexOf('_')); 
     }
-    else if (selectedRepo.repo)
-    {
-      repoUrl = selectedRepo.repo;
-    }
-  }
-
-  // List repos if requested and exit
-  if (args.list)
-  {
-    if (config.repos.length > 0)
-    {
-      console.log('Saved repositories:');
-      config.repos.forEach((r) => console.log(` - ${r}`));
-    }
-    else
-    {
-      console.log('No repositories saved yet.');
-    }
-    return 0;
+    // If prompt was cancelled or nothing selected, repoUrl should retain its initial value (lastRepo or undefined)
   }
 
   // Final check for repo URL
-  if (!repoUrl)
-  {
+  if (!repoUrl) {
     console.error('Repository URL is required');
     return 1;
   }
